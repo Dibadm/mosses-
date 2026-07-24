@@ -113,6 +113,9 @@ class RateLimitMiddleware:
                 cutoff = now - _RATE_LIMIT_WINDOW
                 while window and window[0] < cutoff:
                     window.pop(0)
+                prune_cutoff = now - _RATE_LIMIT_WINDOW * 2
+                while window and window[0] < prune_cutoff:
+                    window.pop(0)
                 if len(window) >= _RATE_LIMIT_MAX:
                     from starlette.responses import JSONResponse
                     resp = JSONResponse({"detail": "Too Many Requests"}, status_code=429)

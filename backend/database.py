@@ -302,6 +302,7 @@ def _init_tables(cur):
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_cards_game ON game_cards(game_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_cards_owner ON game_cards(game_id, owner_id)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_game_card ON game_cards(game_id, card_index)")
 
     # ---------------- GAME NUMBERS (call sequence) ----------------
     cur.execute("""
