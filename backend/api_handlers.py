@@ -792,8 +792,7 @@ def handle_claim_daily_bonus(user_id: int) -> dict:
 
     bonus_to_add = config.DAILY_STREAK_BONUSES.get(streak_days, config.DAILY_BONUS_AMOUNT)
     balance = db.adjust_balance(user_id, bonus_to_add)
-    db.add_bonus_balance(user_id, bonus_to_add)
-    db.record_transaction(user_id, "daily_bonus", bonus_to_add, status="completed")
+        db.record_transaction(user_id, "daily_bonus", bonus_to_add, status="completed")
     db.set_daily_streak_bonus_claimed(user_id, streak_days)
     return {
         "ok": True,
@@ -998,3 +997,4 @@ def handle_admin_force_finish_stuck_game(admin_id: int, game_id: int) -> dict:
     if not success:
         return {"ok": False, "error": reason, "message": f"Game {game_id} could not be force-finished: {reason}"}
     return {"ok": True, "game_id": game_id, "status": "finished"}
+
