@@ -80,7 +80,7 @@ def _schedule_backups():
 
 _RATE_LIMIT_STORE = {}
 _RATE_LIMIT_LOCK = threading.Lock()
-_RATE_LIMIT_MAX = 60
+_RATE_LIMIT_MAX = 300
 _RATE_LIMIT_WINDOW = 60
 
 
