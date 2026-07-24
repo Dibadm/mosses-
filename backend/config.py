@@ -47,6 +47,12 @@ DB_PATH = os.getenv("DB_PATH", "habesha_bet.db")
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "am")
 
 # ============================================
+# TELEBIRR RECEIPT ONLINE VERIFICATION
+# ============================================
+TELEBIRR_VERIFY_ENABLED = os.getenv("TELEBIRR_VERIFY_ENABLED", "false").lower() == "true"
+TELEBIRR_VERIFY_TIMEOUT = int(os.getenv("TELEBIRR_VERIFY_TIMEOUT", "10"))
+
+# ============================================
 # BINGO ROOMS
 # ============================================
 # 4 permanent rooms, always available.

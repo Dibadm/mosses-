@@ -556,7 +556,8 @@ def handle_get_deposit_account() -> dict:
 
 
 def handle_submit_deposit_sms(user_id: int, sms_text: str, expected_amount: float = None) -> dict:
-    from sms_parser import parse_telebirr_sms, verify_recipient, validate_deposit_amount
+    from sms_parser import parse_telebirr_sms, verify_recipient, validate_deposit_amount, extract_receipt_number
+    from telebirr_verify import verify_receipt_online
 
     account = db.get_active_deposit_account()
     if account is None:
@@ -574,6 +575,56 @@ def handle_submit_deposit_sms(user_id: int, sms_text: str, expected_amount: floa
     if db.reference_already_used(parsed["reference"]):
         return {"ok": False, "error": "already_used", "message": "This transaction has already been credited."}
 
+    receipt_no = extract_receipt_number(sms_text)
+    verification_status = "skipped"
+    verification_raw = None
+
+    if config.TELEBIRR_VERIFY_ENABLED and receipt_no:
+        verification_status = "pending"
+        verification = verify_receipt_online(receipt_no, timeout=config.TELEBIRR_VERIFY_TIMEOUT)
+
+        if not verification.get("ok"):
+            verification_status = "failed"
+            verification_raw = verification.get("error")
+            logger.warning(
+                "[telebirr_verify] failed for user=%s receipt=%s error=%s",
+                user_id, receipt_no, verification_raw,
+            )
+            if verification.get("error") in ("receipt_site_unreachable", "receipt_site_timeout", "receipt_fetch_error"):
+                logger.warning("[telebirr_verify] site down, falling back to regex-only for this deposit")
+            else:
+                return {
+                    "ok": False,
+                    "error": "receipt_verification_failed",
+                    "message": "Could not verify receipt. Please try again later.",
+                }
+        else:
+            verification_status = "verified"
+            verification_raw = None
+
+            if verification.get("amount") is not None and abs(verification["amount"] - parsed["amount"]) > 0.01:
+                return {
+                    "ok": False,
+                    "error": "receipt_amount_mismatch",
+                    "message": f"Receipt shows {verification['amount']} ETB but SMS shows {parsed['amount']} ETB.",
+                }
+
+            if verification.get("recipient_name") and parsed.get("recipient_name"):
+                if verification["recipient_name"].strip().lower() != parsed["recipient_name"].strip().lower():
+                    return {
+                        "ok": False,
+                        "error": "receipt_recipient_mismatch",
+                        "message": "Receipt recipient does not match deposit details.",
+                    }
+
+            if verification.get("recipient_phone_last4") and parsed.get("recipient_last4"):
+                if verification["recipient_phone_last4"] != parsed["recipient_last4"]:
+                    return {
+                        "ok": False,
+                        "error": "receipt_phone_mismatch",
+                        "message": "Receipt phone number does not match deposit details.",
+                    }
+
     if expected_amount is not None:
         amount_ok, _ = validate_deposit_amount(parsed, expected_amount=expected_amount)
         if not amount_ok:
@@ -583,7 +634,14 @@ def handle_submit_deposit_sms(user_id: int, sms_text: str, expected_amount: floa
             }
 
     new_balance = db.adjust_balance(user_id, parsed["amount"])
-    db.record_transaction(user_id, "deposit", parsed["amount"], reference=parsed["reference"], status="completed")
+    db.record_transaction(
+        user_id, "deposit", parsed["amount"],
+        reference=parsed["reference"],
+        status="completed",
+        receipt_no=receipt_no,
+        verification_status=verification_status,
+        verification_raw=verification_raw,
+    )
     db.record_deposit_for_account(account["id"])
 
     _maybe_award_referral_bonus(user_id)

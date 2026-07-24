@@ -183,7 +183,10 @@ def _init_tables(cur):
             amount REAL NOT NULL,
             reference TEXT,
             status TEXT NOT NULL,   -- completed, pending, rejected
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            receipt_no TEXT,
+            verification_status TEXT,   -- pending, verified, failed
+            verification_raw TEXT
         )
     """)
     cur.execute("""
@@ -347,6 +350,17 @@ def _init_tables(cur):
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
     except sqlite3.OperationalError:
         pass
+
+    # ---- Migration for receipt verification columns on transactions ----
+    for column, col_def in [
+        ("receipt_no", "TEXT"),
+        ("verification_status", "TEXT"),
+        ("verification_raw", "TEXT"),
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE transactions ADD COLUMN {column} {col_def}")
+        except sqlite3.OperationalError:
+            pass
 
 
 # =====================================================================
@@ -518,12 +532,12 @@ def count_users() -> int:
 # TRANSACTIONS / LEDGER
 # =====================================================================
 
-def record_transaction(user_id: int, tx_type: str, amount: float, reference: str = None, status: str = "completed"):
+def record_transaction(user_id: int, tx_type: str, amount: float, reference: str = None, status: str = "completed", receipt_no: str = None, verification_status: str = None, verification_raw: str = None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO transactions (user_id, type, amount, reference, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, tx_type, amount, reference, status, datetime.utcnow().isoformat())
+        "INSERT INTO transactions (user_id, type, amount, reference, status, created_at, receipt_no, verification_status, verification_raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, tx_type, amount, reference, status, datetime.utcnow().isoformat(), receipt_no, verification_status, verification_raw)
     )
     conn.commit()
 

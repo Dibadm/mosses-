@@ -110,7 +110,7 @@ function DepositPanel() {
           </div>
 
           <button className="btn btn-primary btn-block" onClick={submit} disabled={submitting || !smsText.trim()}>
-            {submitting ? 'Verifying…' : 'Confirm Deposit'}
+            {submitting ? 'Verifying receipt…' : 'Confirm Deposit'}
           </button>
         </>
       )}

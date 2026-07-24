@@ -101,6 +101,36 @@ def parse_telebirr_sms(sms_text: str) -> dict:
 
 
 # =====================================================================
+# RECEIPT NUMBER EXTRACTION
+# =====================================================================
+
+def extract_receipt_number(sms_text: str) -> str | None:
+    """Extract receipt/transaction number from SMS text.
+
+    Matches patterns like:
+      - "Your transaction number is DFE8VVNNIC"
+      - "https://transactioninfo.ethiotelecom.et/receipt/DFE8VVNNIC"
+      - Fallback: any 8-12 char alphanumeric token
+    """
+    if not sms_text:
+        return None
+    text = sms_text.strip()
+
+    m = re.search(r"transaction number is\s+([A-Za-z0-9]+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+
+    m = re.search(r"transactioninfo\.ethiotelecom\.et/receipt/([A-Za-z0-9]+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+
+    tokens = re.findall(r"\b([A-Z0-9]{8,12})\b", text.upper())
+    if tokens:
+        return tokens[0]
+    return None
+
+
+# =====================================================================
 # RECIPIENT VERIFICATION
 # =====================================================================
 
