@@ -205,6 +205,21 @@ def get_bot():
     return _bot_app.bot
 
 
+async def send_admin_alert(text: str, parse_mode=None):
+    try:
+        bot_instance = get_bot()
+        if bot_instance is None:
+            return
+        chat_ids = [x.strip() for x in config.ADMIN_NOTIFICATION_CHAT_IDS.split(",") if x.strip()] if config.ADMIN_NOTIFICATION_CHAT_IDS else [str(x) for x in config.ADMIN_IDS]
+        for chat_id in chat_ids:
+            try:
+                await bot_instance.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+            except Exception as e:
+                logger.error(f"[admin_alert] failed for {chat_id}: {e}")
+    except Exception as e:
+        logger.error(f"[admin_alert] unexpected error: {e}")
+
+
 def _safe_card_index(c):
     if isinstance(c, dict) or hasattr(c, "keys"):
         return int(c["card_index"])
@@ -1148,7 +1163,7 @@ async def admin_withdrawals(query, context, db_user):
         user = db.get_user(wd["user_id"])
         username = user["username"] if user else str(wd["user_id"])
         lines.append(
-            f"#{wd['id']} @{html.escape(username)} — {fmt(wd['amount'])} ETB — {wd['phone']}"
+            f"#{wd['id']} @{html.escape(username)} — {fmt(wd['amount'])} ETB — {wd['phone']} — Status: <b>Pending</b>"
         )
     text = "\n".join(lines)
     await safe_edit(query, text, reply_markup=back_keyboard(config.DEFAULT_LANGUAGE))
@@ -1157,7 +1172,7 @@ async def admin_withdrawals(query, context, db_user):
         user = db.get_user(wd["user_id"])
         username = user["username"] if user else str(wd["user_id"])
         await query.message.reply_text(
-            f"#{wd['id']} @{html.escape(username)} — {fmt(wd['amount'])} ETB",
+            f"#{wd['id']} @{html.escape(username)} — {fmt(wd['amount'])} ETB — Status: <b>Pending</b>",
             reply_markup=withdraw_approval_keyboard(wd["id"]),
         )
 

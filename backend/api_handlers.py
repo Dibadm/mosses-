@@ -681,6 +681,31 @@ def handle_withdraw(user_id: int, amount: float) -> dict:
     withdrawal_id = db.create_withdrawal(user_id, amount, db_user["phone"])
     db.record_transaction(user_id, "withdraw", -amount, reference=f"withdraw_{withdrawal_id}", status="pending")
 
+    try:
+        import asyncio
+        from bot import send_admin_alert
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(send_admin_alert(
+                f"💸 Withdrawal Request\n\n"
+                f"User: {user_id}\n"
+                f"Amount: {amount} ETB\n"
+                f"Phone: {db_user['phone']}\n"
+                f"Withdrawal ID: {withdrawal_id}\n"
+                f"Status: Pending — please review and send money manually"
+            ))
+        else:
+            loop.run_until_complete(send_admin_alert(
+                f"💸 Withdrawal Request\n\n"
+                f"User: {user_id}\n"
+                f"Amount: {amount} ETB\n"
+                f"Phone: {db_user['phone']}\n"
+                f"Withdrawal ID: {withdrawal_id}\n"
+                f"Status: Pending — please review and send money manually"
+            ))
+    except Exception:
+        pass
+
     return {"ok": True, "withdrawal_id": withdrawal_id, "balance": new_balance}
 
 

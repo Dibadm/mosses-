@@ -15,6 +15,12 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 # ---------- TELEGRAM CORE ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "787372880").split(",") if x.strip()]
+
+# ---------- TELEGRAM CHAT ID FORMAT ----------
+# Private user chats use the numeric user ID (e.g. 787372880).
+# Groups and channels use the -100-prefixed numeric ID (e.g. -1001234567890).
+ADMIN_NOTIFICATION_CHAT_IDS = os.getenv("ADMIN_NOTIFICATION_CHAT_IDS", "")
+# If empty, alerts fall back to ADMIN_IDS.
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Vscoodebot")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "your_support_username")
 GROUP_LINK = os.getenv("GROUP_LINK", "https://t.me/your_group")
