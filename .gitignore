@@ -7,11 +7,13 @@ __pycache__/
 .env.*
 *.db
 backups/
+bot.pid
 
 # Node
 node_modules/
 dist/
 miniapp/dist/
+package-lock.json
 
 # IDE
 .vscode/
@@ -23,3 +25,21 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local Python engine/venv
+backend/py_engine/
+backend/Python-3.11.15/
+
+# Local tools
+cloudflared.exe
+cloudflared.err
+cloudflared.log
+config.yml
+patcher.py
+
+# Stray files
+miniapp/api_server.py
+miniapp/index.html
+miniapp/requirements.txt
+habesha_bet.db
+bingo.db
