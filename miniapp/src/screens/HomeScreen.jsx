@@ -1,5 +1,5 @@
 // src/screens/HomeScreen.jsx
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../lib/store';
 import { usePolling } from '../lib/usePolling';
 import { api } from '../lib/api';
@@ -13,7 +13,7 @@ export default function HomeScreen({ onEnterRoom, onOpenGame }) {
   const [activeGame, setActiveGame] = useState(null);
   const [jackpot, setJackpot] = useState(null);
 
-  const fetchAll = async () => {
+  const fetchAll = useCallback(async () => {
     const [roomsRes, activeRes, jackpotRes] = await Promise.all([
       api.getRooms(),
       api.getMyActiveGame(),
@@ -149,3 +149,4 @@ function RoomCard({ room, onClick, jackpot }) {
     </button>
   );
 }
+
