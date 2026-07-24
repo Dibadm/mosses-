@@ -1,5 +1,5 @@
 // src/App.jsx
-import { Component, Suspense } from 'react';
+import React, { Component, Suspense, lazy } from 'react';
 import { useEffect, useState } from 'react';
 import { StoreProvider, useStore } from './lib/store.jsx';
 import { ready, expand, setBackButton, haptic } from './lib/telegram';
@@ -16,11 +16,11 @@ import FadeIn from './components/FadeIn';
 
 const BROADCAST_ENABLED = import.meta.env.VITE_BROADCAST_ENABLED === 'true';
 
-const AdminDashboard = React.lazy(() => import('./screens/AdminDashboard'));
-const AdminWithdrawals = React.lazy(() => import('./screens/AdminWithdrawals'));
-const AdminAccounts = React.lazy(() => import('./screens/AdminAccounts'));
-const AdminHouseWallet = React.lazy(() => import('./screens/AdminHouseWallet'));
-const AdminBroadcast = BROADCAST_ENABLED ? React.lazy(() => import('./screens/AdminBroadcast')) : null;
+const AdminDashboard = lazy(() => import('./screens/AdminDashboard'));
+const AdminWithdrawals = lazy(() => import('./screens/AdminWithdrawals'));
+const AdminAccounts = lazy(() => import('./screens/AdminAccounts'));
+const AdminHouseWallet = lazy(() => import('./screens/AdminHouseWallet'));
+const AdminBroadcast = BROADCAST_ENABLED ? lazy(() => import('./screens/AdminBroadcast')) : null;
 
 const ADMIN_TABS = ['admin-dashboard', 'admin-withdrawals', 'admin-accounts'];
 if (BROADCAST_ENABLED) {
@@ -212,3 +212,4 @@ export default function App() {
     </StoreProvider>
   );
 }
+
