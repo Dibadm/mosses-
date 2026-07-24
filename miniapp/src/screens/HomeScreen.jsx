@@ -22,7 +22,7 @@ export default function HomeScreen({ onEnterRoom, onOpenGame }) {
     setRooms(roomsRes.rooms);
     setActiveGame(activeRes.has_game ? activeRes : null);
     setJackpot(jackpotRes.jackpot?.current_amount > 0 ? jackpotRes.jackpot : null);
-  };
+  });
 
   const { loading, error } = usePolling(fetchAll, { interval: 10000, backoffMax: 60000 });
 
