@@ -39,7 +39,6 @@ patcher.py
 
 # Stray files
 miniapp/api_server.py
-miniapp/index.html
 miniapp/requirements.txt
 habesha_bet.db
 bingo.db
