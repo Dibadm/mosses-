@@ -2,6 +2,7 @@ import os
 import sys
 import threading
 import time
+import asyncio
 import uvicorn
 import bot
 
@@ -14,4 +15,11 @@ if __name__ == "__main__":
     api_thread = threading.Thread(target=run_api, daemon=True)
     api_thread.start()
     time.sleep(2)
+
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     bot.main()
