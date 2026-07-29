@@ -134,37 +134,58 @@ def _init_tables_impl(cur):
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     try:
         cur.execute("ALTER TABLE users ADD COLUMN bonus_balance NUMERIC(12,2) NOT NULL DEFAULT 0")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     try:
         cur.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'am'")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referral_bonus_given INTEGER NOT NULL DEFAULT 0")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_bonus_claim TEXT")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_transfer_time TEXT")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     # ---------------- TRANSACTIONS (full ledger) ----------------
     cur.execute("""
@@ -249,11 +270,17 @@ def _init_tables_impl(cur):
     try:
         cur.execute("ALTER TABLE games ADD COLUMN countdown_started_at TEXT")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
     try:
         cur.execute("ALTER TABLE games ADD COLUMN winner_cards TEXT")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     # ---------------- MANUAL BINGO CLAIMS ----------------
     cur.execute("""
@@ -339,13 +366,19 @@ def _init_tables_impl(cur):
         try:
             cur.execute(f"ALTER TABLE users ADD COLUMN {column} {col_def}")
         except errors.DuplicateColumn:
-            pass
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
 
     # ---- Migration for chat_id ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
     except errors.DuplicateColumn:
-        pass
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
 
     # ---- Migration for receipt verification columns on transactions ----
     for column, col_def in [
@@ -356,7 +389,10 @@ def _init_tables_impl(cur):
         try:
             cur.execute(f"ALTER TABLE transactions ADD COLUMN {column} {col_def}")
         except errors.DuplicateColumn:
-            pass
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
 
 
 # =====================================================================
