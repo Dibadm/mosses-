@@ -441,8 +441,35 @@ def get_bonus_balance(user_id: int) -> float:
         return 0.0
 
 
+def deduct_balance(user_id: int, amount: float) -> tuple:
+    """Atomically deduct from balance if sufficient funds exist.
+    Returns (success: bool, new_balance: float)."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute(
+        "UPDATE users SET balance = balance - %s WHERE user_id = %s AND balance >= %s",
+        (amount, user_id, amount)
+    )
+    success = cur.rowcount > 0
+    if success:
+        conn.commit()
+        cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
+        new_balance = float(cur.fetchone()["balance"])
+    else:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        user = get_user(user_id)
+        new_balance = float(user["balance"]) if user else 0.0
+    release_connection(conn)
+    return success, new_balance
+
+
 def adjust_balance(user_id: int, amount: float) -> float:
-    """Add (or subtract, if negative) to a user's balance. Returns new balance."""
+    """Add (or subtract, if negative) to a user's balance. Returns new balance.
+    WARNING: this version does NOT guard against negative balances.
+    For withdrawals, use deduct_balance() instead."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (amount, user_id))
