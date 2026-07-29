@@ -86,8 +86,15 @@ def init_db():
     """Create all tables and indexes if they don't exist. Safe to call every startup."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=extras.RealDictCursor)
-    _init_tables(cur)
-    conn.commit()
+    try:
+        _init_tables(cur)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     init_house_wallet()
 
 
@@ -97,6 +104,14 @@ def backup_database():
 
 
 def _init_tables(cur):
+    try:
+        _init_tables_impl(cur)
+    except Exception:
+        logger.exception("[database] _init_tables failed")
+        raise
+
+
+def _init_tables_impl(cur):
 
     # ---------------- USERS ----------------
     cur.execute("""
