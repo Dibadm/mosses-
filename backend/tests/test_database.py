@@ -4,6 +4,8 @@
 # ============================================
 
 import os
+import threading
+import time
 import pytest
 
 import sys
@@ -160,3 +162,39 @@ def test_house_wallet():
 
     total = db.get_house_total_earned()
     assert total == 10.0
+
+
+def test_concurrent_deductions_only_one_succeeds():
+    _require_db()
+    db.init_db()
+    test_id = 999999996
+    try:
+        db.get_or_create_user(test_id, "concurrenttest")
+        db.adjust_balance(test_id, 50.0)
+        assert db.get_balance(test_id) == 50.0
+
+        results = []
+        barrier = threading.Barrier(2)
+
+        def try_deduct(amount):
+            barrier.wait()
+            results.append(db.deduct_balance(test_id, amount))
+
+        t1 = threading.Thread(target=try_deduct, args=(30.0,))
+        t2 = threading.Thread(target=try_deduct, args=(30.0,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        successes = [r for r in results if r[0] is True]
+        assert len(successes) == 1
+
+        final_balance = db.get_balance(test_id)
+        assert final_balance == 20.0
+    finally:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM users WHERE user_id = %s", (test_id,))
+        conn.commit()
+        db.release_connection(conn)
