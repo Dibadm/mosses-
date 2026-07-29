@@ -131,61 +131,54 @@ def _init_tables_impl(cur):
         )
     """)
 
+    # ---- Migration for chat_id ----
+    cur.execute("SAVEPOINT sp_chat_id")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_chat_id")
 
+    # ---- Migration for bonus_balance ----
+    cur.execute("SAVEPOINT sp_bonus_balance")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN bonus_balance NUMERIC(12,2) NOT NULL DEFAULT 0")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_bonus_balance")
 
+    # ---- Migration for language ----
+    cur.execute("SAVEPOINT sp_language")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'am'")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_language")
 
+    # ---- Migration for referred_by ----
+    cur.execute("SAVEPOINT sp_referred_by")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_referred_by")
 
+    # ---- Migration for referral_bonus_given ----
+    cur.execute("SAVEPOINT sp_referral_bonus_given")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referral_bonus_given INTEGER NOT NULL DEFAULT 0")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_referral_bonus_given")
 
+    # ---- Migration for last_bonus_claim ----
+    cur.execute("SAVEPOINT sp_last_bonus_claim")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_bonus_claim TEXT")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_last_bonus_claim")
 
+    # ---- Migration for last_transfer_time ----
+    cur.execute("SAVEPOINT sp_last_transfer_time")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_transfer_time TEXT")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_last_transfer_time")
 
     # ---------------- TRANSACTIONS (full ledger) ----------------
     cur.execute("""
@@ -267,20 +260,16 @@ def _init_tables_impl(cur):
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_games_room_state ON games(room_fee, state)")
+    cur.execute("SAVEPOINT sp_games_countdown")
     try:
         cur.execute("ALTER TABLE games ADD COLUMN countdown_started_at TEXT")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_games_countdown")
+    cur.execute("SAVEPOINT sp_games_winner_cards")
     try:
         cur.execute("ALTER TABLE games ADD COLUMN winner_cards TEXT")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_games_winner_cards")
 
     # ---------------- MANUAL BINGO CLAIMS ----------------
     cur.execute("""
@@ -363,22 +352,18 @@ def _init_tables_impl(cur):
         ("last_bonus_claim_date", "TEXT"),
         ("chat_id", "INTEGER"),
     ]:
+        cur.execute(f"SAVEPOINT sp_users_{column}")
         try:
             cur.execute(f"ALTER TABLE users ADD COLUMN {column} {col_def}")
         except errors.DuplicateColumn:
-            try:
-                cur.connection.rollback()
-            except Exception:
-                pass
+            cur.execute(f"ROLLBACK TO SAVEPOINT sp_users_{column}")
 
     # ---- Migration for chat_id ----
+    cur.execute("SAVEPOINT sp_users_chat_id")
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
     except errors.DuplicateColumn:
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
+        cur.execute("ROLLBACK TO SAVEPOINT sp_users_chat_id")
 
     # ---- Migration for receipt verification columns on transactions ----
     for column, col_def in [
@@ -386,13 +371,11 @@ def _init_tables_impl(cur):
         ("verification_status", "TEXT"),
         ("verification_raw", "TEXT"),
     ]:
+        cur.execute(f"SAVEPOINT sp_tx_{column}")
         try:
             cur.execute(f"ALTER TABLE transactions ADD COLUMN {column} {col_def}")
         except errors.DuplicateColumn:
-            try:
-                cur.connection.rollback()
-            except Exception:
-                pass
+            cur.execute(f"ROLLBACK TO SAVEPOINT sp_tx_{column}")
 
 
 # =====================================================================
