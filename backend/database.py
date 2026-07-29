@@ -47,7 +47,12 @@ def get_connection():
     if _db_pool is None:
         with _init_db_lock:
             if _db_pool is None:
-                db_url = getattr(config, "DATABASE_URL", "") or config.DB_PATH
+                db_url = getattr(config, "DATABASE_URL", "") or os.getenv("DATABASE_URL")
+                if not db_url:
+                    raise RuntimeError(
+                        "DATABASE_URL is required for PostgreSQL. "
+                        "Set it in your environment/config."
+                    )
                 _db_pool = pool.ThreadedConnectionPool(
                     minconn=1, maxconn=20, dsn=db_url,
                     connect_timeout=10,
