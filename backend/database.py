@@ -24,7 +24,7 @@
 # ============================================
 
 import psycopg2
-from psycopg2 import pool, extras
+from psycopg2 import pool, extras, errors
 import json
 import logging
 import os
@@ -131,46 +131,39 @@ def _init_tables_impl(cur):
         )
     """)
 
-    # ---- Migration for chat_id ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
-    # ---- Migration for bonus_balance ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN bonus_balance NUMERIC(12,2) NOT NULL DEFAULT 0")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
-    # ---- Migration for language ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'am'")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
-    # ---- Migration for referred_by ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
-    # ---- Migration for referral_bonus_given ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referral_bonus_given INTEGER NOT NULL DEFAULT 0")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
-    # ---- Migration for last_bonus_claim ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_bonus_claim TEXT")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
-    # ---- Migration for last_transfer_time ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_transfer_time TEXT")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
     # ---------------- TRANSACTIONS (full ledger) ----------------
@@ -255,11 +248,11 @@ def _init_tables_impl(cur):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_games_room_state ON games(room_fee, state)")
     try:
         cur.execute("ALTER TABLE games ADD COLUMN countdown_started_at TEXT")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
     try:
         cur.execute("ALTER TABLE games ADD COLUMN winner_cards TEXT")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
     # ---------------- MANUAL BINGO CLAIMS ----------------
@@ -345,13 +338,13 @@ def _init_tables_impl(cur):
     ]:
         try:
             cur.execute(f"ALTER TABLE users ADD COLUMN {column} {col_def}")
-        except Exception:
+        except errors.DuplicateColumn:
             pass
 
     # ---- Migration for chat_id ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
-    except Exception:
+    except errors.DuplicateColumn:
         pass
 
     # ---- Migration for receipt verification columns on transactions ----
@@ -362,7 +355,7 @@ def _init_tables_impl(cur):
     ]:
         try:
             cur.execute(f"ALTER TABLE transactions ADD COLUMN {column} {col_def}")
-        except Exception:
+        except errors.DuplicateColumn:
             pass
 
 
