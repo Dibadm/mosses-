@@ -1,7 +1,7 @@
 # database.py
 # ============================================
 # HABESHA BET - DATABASE LAYER
-# SQLite, row_factory = sqlite3.Row throughout.
+# PostgreSQL via psycopg2, RealDictCursor throughout.
 #
 # Tables:
 #   users            - accounts, balances, phone, language, referrals
@@ -23,13 +23,14 @@
 #     never be credited twice.
 # ============================================
 
-import sqlite3
+import psycopg2
+from psycopg2 import pool, extras
 import json
 import logging
 import os
 import shutil
 from datetime import datetime, timedelta
-from threading import Lock, local
+from threading import Lock
 
 import config
 
@@ -37,75 +38,49 @@ logger = logging.getLogger("habesha_bet")
 
 _backup_lock = Lock()
 _last_backup_ts = None
-_conn_local = local()
+_db_pool = None
+_init_db_lock = Lock()
 
 
 def get_connection():
-    conn = getattr(_conn_local, 'connection', None)
-    if conn is not None:
+    global _db_pool
+    if _db_pool is None:
+        with _init_db_lock:
+            if _db_pool is None:
+                db_url = getattr(config, "DATABASE_URL", "") or config.DB_PATH
+                _db_pool = pool.ThreadedConnectionPool(
+                    minconn=1, maxconn=20, dsn=db_url,
+                    connect_timeout=10,
+                )
+    conn = _db_pool.getconn()
+    conn.autocommit = False
+    return conn
+
+
+def release_connection(conn):
+    global _db_pool
+    if _db_pool is not None and conn is not None:
         try:
-            conn.execute("SELECT 1")
-            return conn
+            _db_pool.putconn(conn)
         except Exception:
             try:
                 conn.close()
             except Exception:
                 pass
-            _conn_local.connection = None
-    conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    _conn_local.connection = conn
-    return conn
 
 
 def init_db():
     """Create all tables and indexes if they don't exist. Safe to call every startup."""
     conn = get_connection()
-    conn.execute("PRAGMA journal_mode=WAL")
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     _init_tables(cur)
     conn.commit()
     init_house_wallet()
 
 
 def backup_database():
-    """Copy the database file to the backups directory. Safe to call
-    concurrently - threads beyond the first are no-ops until the first
-    backup finishes."""
-    global _last_backup_ts
-    with _backup_lock:
-        now = datetime.utcnow()
-        if _last_backup_ts and (now - _last_backup_ts).total_seconds() < 30:
-            return
-        try:
-            src = os.path.abspath(config.DB_PATH)
-            if not os.path.exists(src):
-                return
-            backup_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "backups"))
-            os.makedirs(backup_dir, exist_ok=True)
-            ts = now.strftime("%Y%m%d_%H%M%S")
-            name = os.path.basename(src)
-            if "." in name:
-                base, ext = name.rsplit(".", 1)
-                dst = os.path.join(backup_dir, f"{base}_{ts}.{ext}")
-            else:
-                dst = os.path.join(backup_dir, f"{name}_{ts}")
-            shutil.copy2(src, dst)
-            _last_backup_ts = now
-            backups = sorted(
-                [os.path.join(backup_dir, f) for f in os.listdir(backup_dir)],
-                key=os.path.getmtime,
-                reverse=True,
-            )
-            max_backups = getattr(config, "MAX_BACKUPS", 50)
-            for old in backups[max_backups:]:
-                try:
-                    os.remove(old)
-                except OSError:
-                    pass
-        except Exception:
-            pass
+    """PostgreSQL no-op: managed backups on Render."""
+    return
 
 
 def _init_tables(cur):
@@ -116,8 +91,8 @@ def _init_tables(cur):
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             phone TEXT,
-            balance REAL NOT NULL DEFAULT 0,
-            bonus_balance REAL NOT NULL DEFAULT 0,
+            balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+            bonus_balance NUMERIC(12,2) NOT NULL DEFAULT 0,
             language TEXT NOT NULL DEFAULT 'am',
             referred_by INTEGER,
             referral_bonus_given INTEGER NOT NULL DEFAULT 0,
@@ -131,56 +106,56 @@ def _init_tables(cur):
     # ---- Migration for chat_id ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
     # ---- Migration for bonus_balance ----
     try:
-        cur.execute("ALTER TABLE users ADD COLUMN bonus_balance REAL NOT NULL DEFAULT 0")
-    except sqlite3.OperationalError:
+        cur.execute("ALTER TABLE users ADD COLUMN bonus_balance NUMERIC(12,2) NOT NULL DEFAULT 0")
+    except Exception:
         pass
 
     # ---- Migration for language ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'am'")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
     # ---- Migration for referred_by ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
     # ---- Migration for referral_bonus_given ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN referral_bonus_given INTEGER NOT NULL DEFAULT 0")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
     # ---- Migration for last_bonus_claim ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_bonus_claim TEXT")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
     # ---- Migration for last_transfer_time ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN last_transfer_time TEXT")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
     # ---------------- TRANSACTIONS (full ledger) ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             type TEXT NOT NULL,
             -- types: deposit, withdraw, withdraw_refund, transfer_in, transfer_out,
             --        bingo_bet, bingo_win, bingo_refund,
             --        referral_bonus, signup_bonus, daily_bonus,
             --        house_commission
-            amount REAL NOT NULL,
+            amount NUMERIC(12,2) NOT NULL,
             reference TEXT,
             status TEXT NOT NULL,   -- completed, pending, rejected
             created_at TEXT NOT NULL,
@@ -192,7 +167,6 @@ def _init_tables(cur):
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_reference
         ON transactions(reference)
-        WHERE reference IS NOT NULL
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(type)")
@@ -200,9 +174,9 @@ def _init_tables(cur):
     # ---------------- WITHDRAWALS ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
-            amount REAL NOT NULL,
+            amount NUMERIC(12,2) NOT NULL,
             phone TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL
@@ -212,7 +186,7 @@ def _init_tables(cur):
     # ---------------- ADMIN AUDIT LOG ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS admin_audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             admin_id INTEGER NOT NULL,
             action TEXT NOT NULL,
             target_id INTEGER,
@@ -224,7 +198,7 @@ def _init_tables(cur):
     # ---------------- DEPOSIT ACCOUNTS (rotating Telebirr numbers) ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS deposit_accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             phone TEXT NOT NULL,
             recipient_name TEXT NOT NULL,
             active INTEGER NOT NULL DEFAULT 0,
@@ -236,14 +210,14 @@ def _init_tables(cur):
     # ---------------- GAMES ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS games (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_fee REAL NOT NULL,
+            id SERIAL PRIMARY KEY,
+            room_fee NUMERIC(12,2) NOT NULL,
             state TEXT NOT NULL DEFAULT 'waiting',  -- waiting, running, finished
-            pool REAL NOT NULL DEFAULT 0,
-            house_cut REAL,
+            pool NUMERIC(12,2) NOT NULL DEFAULT 0,
+            house_cut NUMERIC(12,2),
             winner_ids TEXT,           -- JSON list of user_ids, set when finished
             winner_cards TEXT,          -- JSON map user_id -> [winning card_index,...]
-            per_winner_amount REAL,
+            per_winner_amount NUMERIC(12,2),
             created_at TEXT NOT NULL,
             started_at TEXT,
             finished_at TEXT,
@@ -263,7 +237,7 @@ def _init_tables(cur):
     # ---------------- MANUAL BINGO CLAIMS ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS manual_bingo_claims (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             game_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             card_indices TEXT NOT NULL,
@@ -276,7 +250,7 @@ def _init_tables(cur):
     # ---------------- GAME PLAYERS ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS game_players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             game_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             cards_count INTEGER NOT NULL DEFAULT 0,
@@ -291,7 +265,7 @@ def _init_tables(cur):
     # ---------------- GAME CARDS ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS game_cards (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             game_id INTEGER NOT NULL,
             card_index INTEGER NOT NULL,   -- 0-199, position in the 200-card pool
             owner_id INTEGER NOT NULL,
@@ -307,7 +281,7 @@ def _init_tables(cur):
     # ---------------- GAME NUMBERS (call sequence) ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS game_numbers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             game_id INTEGER NOT NULL,
             call_order INTEGER NOT NULL,   -- 1, 2, 3 ... up to 75
             number INTEGER NOT NULL,       -- the ball number 1-75
@@ -321,7 +295,7 @@ def _init_tables(cur):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS jackpot (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            current_amount REAL NOT NULL DEFAULT 0,
+            current_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
             room_fee INTEGER NOT NULL,
             triggered INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL
@@ -336,20 +310,20 @@ def _init_tables(cur):
         ("referral_bonus_given", "INTEGER NOT NULL DEFAULT 0"),
         ("last_bonus_claim", "TEXT"),
         ("last_transfer_time", "TEXT"),
-        ("bonus_balance", "REAL NOT NULL DEFAULT 0"),
+        ("bonus_balance", "NUMERIC(12,2) NOT NULL DEFAULT 0"),
         ("daily_streak", "INTEGER NOT NULL DEFAULT 0"),
         ("last_bonus_claim_date", "TEXT"),
         ("chat_id", "INTEGER"),
     ]:
         try:
             cur.execute(f"ALTER TABLE users ADD COLUMN {column} {col_def}")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
     # ---- Migration for chat_id ----
     try:
         cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
-    except sqlite3.OperationalError:
+    except Exception:
         pass
 
     # ---- Migration for receipt verification columns on transactions ----
@@ -360,7 +334,7 @@ def _init_tables(cur):
     ]:
         try:
             cur.execute(f"ALTER TABLE transactions ADD COLUMN {column} {col_def}")
-        except sqlite3.OperationalError:
+        except Exception:
             pass
 
 
@@ -368,50 +342,53 @@ def _init_tables(cur):
 # USERS
 # =====================================================================
 
-def find_user_by_username(username: str) -> sqlite3.Row:
+def find_user_by_username(username: str):
     """Case-insensitive lookup by username (without leading @), used for
     the transfer flow where the sender types the recipient's @handle.
     Returns the most recently created matching user if somehow more than
     one row shares a username (e.g. stale data from a username change)."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "SELECT * FROM users WHERE LOWER(username) = LOWER(?) ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM users WHERE LOWER(username) = LOWER(%s) ORDER BY created_at DESC LIMIT 1",
         (username,)
     )
     row = cur.fetchone()
+    release_connection(conn)
     return row
 
 
-def get_or_create_user(user_id: int, username: str, referred_by: int = None) -> sqlite3.Row:
+def get_or_create_user(user_id: int, username: str, referred_by: int = None):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
 
     if user is None:
         cur.execute(
             "INSERT INTO users (user_id, username, balance, language, referred_by, created_at) "
-            "VALUES (?, ?, 0, ?, ?, ?)",
+            "VALUES (%s, %s, 0, %s, %s, %s)",
             (user_id, username, config.DEFAULT_LANGUAGE, referred_by, datetime.utcnow().isoformat())
         )
         conn.commit()
-        cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
         user = cur.fetchone()
+    release_connection(conn)
     return user
 
 
-def get_user(user_id: int) -> sqlite3.Row:
+def get_user(user_id: int):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
+    release_connection(conn)
     return user
 
 
 def get_balance(user_id: int) -> float:
     user = get_user(user_id)
-    return user["balance"] if user else 0.0
+    return float(user["balance"]) if user else 0.0
 
 
 def get_bonus_balance(user_id: int) -> float:
@@ -419,7 +396,7 @@ def get_bonus_balance(user_id: int) -> float:
     if not user:
         return 0.0
     try:
-        return user["bonus_balance"]
+        return float(user["bonus_balance"])
     except (KeyError, IndexError):
         return 0.0
 
@@ -427,12 +404,13 @@ def get_bonus_balance(user_id: int) -> float:
 def adjust_balance(user_id: int, amount: float) -> float:
     """Add (or subtract, if negative) to a user's balance. Returns new balance."""
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (amount, user_id))
     conn.commit()
-    cur.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+    cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
     new_balance = cur.fetchone()["balance"]
-    return new_balance
+    release_connection(conn)
+    return float(new_balance)
 
 
 def add_bonus_balance(user_id: int, amount: float):
@@ -440,22 +418,24 @@ def add_bonus_balance(user_id: int, amount: float):
     bonuses). Kept separate from `balance` so the UI can show how much a
     player has earned from bonuses vs. deposited/won funds."""
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET bonus_balance = bonus_balance + ? WHERE user_id = ?", (amount, user_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("UPDATE users SET bonus_balance = bonus_balance + %s WHERE user_id = %s", (amount, user_id))
     conn.commit()
+    release_connection(conn)
 
 
 def subtract_bonus_balance(user_id: int, amount: float) -> bool:
     """Atomically deduct from bonus_balance. Returns True if successful."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE users SET bonus_balance = bonus_balance - ? WHERE user_id = ? AND bonus_balance >= ?",
+        "UPDATE users SET bonus_balance = bonus_balance - %s WHERE user_id = %s AND bonus_balance >= %s",
         (amount, user_id, amount)
     )
     success = cur.rowcount > 0
     if success:
         conn.commit()
+    release_connection(conn)
     return success
 
 
@@ -465,67 +445,73 @@ def spend_funds(user_id: int, amount: float, conn=None, cur=None) -> tuple:
     owns_conn = conn is None
     if owns_conn:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=extras.RealDictCursor)
 
     cur.execute(
-        "UPDATE users SET bonus_balance = bonus_balance - ? WHERE user_id = ? AND bonus_balance >= ?",
+        "UPDATE users SET bonus_balance = bonus_balance - %s WHERE user_id = %s AND bonus_balance >= %s",
         (amount, user_id, amount)
     )
     if cur.rowcount > 0:
         if owns_conn:
             conn.commit()
+            release_connection(conn)
         return True, "ok"
 
     cur.execute(
-        "UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?",
+        "UPDATE users SET balance = balance - %s WHERE user_id = %s AND balance >= %s",
         (amount, user_id, amount)
     )
     if cur.rowcount > 0:
         if owns_conn:
             conn.commit()
-            conn.close()
+            release_connection(conn)
         return True, "ok"
 
     if owns_conn:
-        conn.close()
+        release_connection(conn)
     return False, "insufficient_funds"
 
 
 def set_user_phone(user_id: int, phone: str):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET phone = ? WHERE user_id = ?", (phone, user_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("UPDATE users SET phone = %s WHERE user_id = %s", (phone, user_id))
     conn.commit()
+    release_connection(conn)
 
 
 def set_user_language(user_id: int, lang: str):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("UPDATE users SET language = %s WHERE user_id = %s", (lang, user_id))
     conn.commit()
+    release_connection(conn)
 
 
 def update_user_chat_id(user_id: int, chat_id: int):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET chat_id = ? WHERE user_id = ?", (chat_id, user_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("UPDATE users SET chat_id = %s WHERE user_id = %s", (chat_id, user_id))
     conn.commit()
+    release_connection(conn)
 
 
 def get_all_user_ids() -> list:
     """For broadcast - returns all registered user_ids."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT user_id FROM users")
     rows = cur.fetchall()
+    release_connection(conn)
     return [r["user_id"] for r in rows]
 
 
 def count_users() -> int:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT COUNT(*) as c FROM users")
     row = cur.fetchone()
+    release_connection(conn)
     return row["c"]
 
 
@@ -535,19 +521,21 @@ def count_users() -> int:
 
 def record_transaction(user_id: int, tx_type: str, amount: float, reference: str = None, status: str = "completed", receipt_no: str = None, verification_status: str = None, verification_raw: str = None):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "INSERT INTO transactions (user_id, type, amount, reference, status, created_at, receipt_no, verification_status, verification_raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO transactions (user_id, type, amount, reference, status, created_at, receipt_no, verification_status, verification_raw) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (user_id, tx_type, amount, reference, status, datetime.utcnow().isoformat(), receipt_no, verification_status, verification_raw)
     )
     conn.commit()
+    release_connection(conn)
 
 
 def reference_already_used(reference: str) -> bool:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM transactions WHERE reference = ?", (reference,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT 1 FROM transactions WHERE reference = %s", (reference,))
     row = cur.fetchone()
+    release_connection(conn)
     return row is not None
 
 
@@ -555,56 +543,61 @@ def get_user_transactions(user_id: int, limit: int = 10) -> list:
     """Most recent transactions for this user, newest first - used for
     the '/Transactions' menu screen."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+        "SELECT * FROM transactions WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
         (user_id, limit)
     )
     rows = cur.fetchall()
+    release_connection(conn)
     return rows
 
 
 def count_deposits(user_id: int) -> int:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "SELECT COUNT(*) as c FROM transactions WHERE user_id = ? AND type = 'deposit' AND status = 'completed'",
+        "SELECT COUNT(*) as c FROM transactions WHERE user_id = %s AND type = 'deposit' AND status = 'completed'",
         (user_id,)
     )
     row = cur.fetchone()
+    release_connection(conn)
     return row["c"] if row else 0
 
 
 def get_total_collected() -> float:
     """Sum of all completed deposits - for admin dashboard."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE type='deposit' AND status='completed'")
     row = cur.fetchone()
-    return row["total"]
+    release_connection(conn)
+    return float(row["total"])
 
 
 def get_net_profit() -> float:
     """Sum of all house_commission transactions - for admin dashboard."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM transactions WHERE type='house_commission'")
     row = cur.fetchone()
-    return row["total"]
+    release_connection(conn)
+    return float(row["total"])
 
 
 def get_peak_hours() -> list:
     """Returns [(hour_0_23, count), ...] based on bingo_bet transactions (UTC hour)."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("""
-        SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count
+        SELECT EXTRACT(HOUR FROM created_at)::INTEGER as hour, COUNT(*) as count
         FROM transactions
         WHERE type = 'bingo_bet'
         GROUP BY hour
         ORDER BY hour
     """)
     rows = cur.fetchall()
+    release_connection(conn)
     return [(r["hour"], r["count"]) for r in rows]
 
 
@@ -614,17 +607,19 @@ def get_peak_hours() -> list:
 
 def count_referrals(user_id: int) -> int:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) as c FROM users WHERE referred_by = ?", (user_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT COUNT(*) as c FROM users WHERE referred_by = %s", (user_id,))
     row = cur.fetchone()
+    release_connection(conn)
     return row["c"] if row else 0
 
 
 def mark_referral_bonus_given(user_id: int):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET referral_bonus_given = 1 WHERE user_id = ?", (user_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("UPDATE users SET referral_bonus_given = 1 WHERE user_id = %s", (user_id,))
     conn.commit()
+    release_connection(conn)
 
 
 def can_claim_daily_streak_bonus(user_id: int):
@@ -655,12 +650,13 @@ def can_claim_daily_streak_bonus(user_id: int):
 
 def set_daily_streak_bonus_claimed(user_id: int, streak: int):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE users SET last_bonus_claim_date = ?, daily_streak = ? WHERE user_id = ?",
+        "UPDATE users SET last_bonus_claim_date = %s, daily_streak = %s WHERE user_id = %s",
         (datetime.utcnow().date().isoformat(), streak, user_id),
     )
     conn.commit()
+    release_connection(conn)
 
 
 def get_daily_streak(user_id: int) -> int:
@@ -695,28 +691,27 @@ def transfer_funds(from_id: int, to_id: int, amount: float):
     """Atomically move funds between two users.
     Returns (success: bool, reason: str)."""
     conn = get_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("BEGIN IMMEDIATE")
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
 
-        # Conditional debit - bonus first, prevents negative balances even under concurrent requests.
-        success, reason = spend_funds(from_id, amount, conn=conn, cur=cur)
-        if not success:
-            conn.rollback()
-            return False, reason
+    cur.execute("BEGIN")
 
-        cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, to_id))
-        cur.execute(
-            "UPDATE users SET last_transfer_time = ? WHERE user_id = ?",
-            (datetime.utcnow().isoformat(), from_id)
-        )
-        conn.commit()
-    except Exception:
+    # Conditional debit - bonus first, prevents negative balances even under concurrent requests.
+    success, reason = spend_funds(from_id, amount, conn=conn, cur=cur)
+    if not success:
         conn.rollback()
-        raise
+        release_connection(conn)
+        return False, reason
+
+    cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (amount, to_id))
+    cur.execute(
+        "UPDATE users SET last_transfer_time = %s WHERE user_id = %s",
+        (datetime.utcnow().isoformat(), from_id)
+    )
+    conn.commit()
 
     record_transaction(from_id, "transfer_out", -amount, status="completed")
     record_transaction(to_id, "transfer_in", amount, status="completed")
+    release_connection(conn)
     return True, "ok"
 
 
@@ -726,39 +721,43 @@ def transfer_funds(from_id: int, to_id: int, amount: float):
 
 def create_withdrawal(user_id: int, amount: float, phone: str) -> int:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "INSERT INTO withdrawals (user_id, amount, phone, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+        "INSERT INTO withdrawals (user_id, amount, phone, status, created_at) VALUES (%s, %s, %s, 'pending', %s)",
         (user_id, amount, phone, datetime.utcnow().isoformat())
     )
     conn.commit()
     withdrawal_id = cur.lastrowid
+    release_connection(conn)
     return withdrawal_id
 
 
-def get_withdrawal(withdrawal_id: int) -> sqlite3.Row:
+def get_withdrawal(withdrawal_id: int):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM withdrawals WHERE id = ?", (withdrawal_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT * FROM withdrawals WHERE id = %s", (withdrawal_id,))
     row = cur.fetchone()
+    release_connection(conn)
     return row
 
 
 def get_pending_withdrawals() -> list:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT * FROM withdrawals WHERE status = 'pending' ORDER BY created_at ASC")
     rows = cur.fetchall()
+    release_connection(conn)
     return rows
 
 
 def update_withdrawal_status(withdrawal_id: int, status: str):
     """Update status only if currently pending. Returns True if updated."""
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE withdrawals SET status = ? WHERE id = ? AND status = 'pending'", (status, withdrawal_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("UPDATE withdrawals SET status = %s WHERE id = %s AND status = 'pending'", (status, withdrawal_id))
     success = cur.rowcount > 0
     conn.commit()
+    release_connection(conn)
     return success
 
 
@@ -769,60 +768,65 @@ def update_withdrawal_status(withdrawal_id: int, status: str):
 def add_deposit_account(phone: str, recipient_name: str) -> int:
     """Add a new deposit account. If it's the first account, make it active."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT COUNT(*) as c FROM deposit_accounts")
     is_first = cur.fetchone()["c"] == 0
 
     cur.execute(
-        "INSERT INTO deposit_accounts (phone, recipient_name, active, deposit_count, created_at) VALUES (?, ?, ?, 0, ?)",
+        "INSERT INTO deposit_accounts (phone, recipient_name, active, deposit_count, created_at) VALUES (%s, %s, %s, 0, %s)",
         (phone, recipient_name, 1 if is_first else 0, datetime.utcnow().isoformat())
     )
     conn.commit()
     account_id = cur.lastrowid
+    release_connection(conn)
     return account_id
 
 
 def remove_deposit_account(account_id: int):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
 
-    cur.execute("SELECT active FROM deposit_accounts WHERE id = ?", (account_id,))
+    cur.execute("SELECT active FROM deposit_accounts WHERE id = %s", (account_id,))
     row = cur.fetchone()
     was_active = row["active"] if row else 0
 
-    cur.execute("DELETE FROM deposit_accounts WHERE id = ?", (account_id,))
+    cur.execute("DELETE FROM deposit_accounts WHERE id = %s", (account_id,))
 
     if was_active:
         # Promote another account to active, if any remain
         cur.execute("SELECT id FROM deposit_accounts ORDER BY id LIMIT 1")
         next_row = cur.fetchone()
         if next_row:
-            cur.execute("UPDATE deposit_accounts SET active = 1 WHERE id = ?", (next_row["id"],))
+            cur.execute("UPDATE deposit_accounts SET active = 1 WHERE id = %s", (next_row["id"],))
 
     conn.commit()
+    release_connection(conn)
 
 
 def list_deposit_accounts() -> list:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT * FROM deposit_accounts ORDER BY id")
     rows = cur.fetchall()
+    release_connection(conn)
     return rows
 
 
 def get_active_deposit_accounts() -> list:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT * FROM deposit_accounts WHERE active = 1 ORDER BY id")
     rows = cur.fetchall()
+    release_connection(conn)
     return rows
 
 
-def get_active_deposit_account() -> sqlite3.Row:
+def get_active_deposit_account():
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT * FROM deposit_accounts WHERE active = 1 LIMIT 1")
     row = cur.fetchone()
+    release_connection(conn)
     return row
 
 
@@ -831,10 +835,10 @@ def record_deposit_for_account(account_id: int):
     rotation threshold, switch the active flag to the next account
     (round-robin by id) and reset this account's counter."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
 
-    cur.execute("UPDATE deposit_accounts SET deposit_count = deposit_count + 1 WHERE id = ?", (account_id,))
-    cur.execute("SELECT deposit_count FROM deposit_accounts WHERE id = ?", (account_id,))
+    cur.execute("UPDATE deposit_accounts SET deposit_count = deposit_count + 1 WHERE id = %s", (account_id,))
+    cur.execute("SELECT deposit_count FROM deposit_accounts WHERE id = %s", (account_id,))
     row = cur.fetchone()
 
     if row and row["deposit_count"] >= config.ROTATE_AFTER_DEPOSITS:
@@ -845,13 +849,14 @@ def record_deposit_for_account(account_id: int):
             current_index = all_ids.index(account_id)
             next_id = all_ids[(current_index + 1) % len(all_ids)]
 
-            cur.execute("UPDATE deposit_accounts SET active = 0 WHERE id = ?", (account_id,))
-            cur.execute("UPDATE deposit_accounts SET active = 1, deposit_count = 0 WHERE id = ?", (next_id,))
+            cur.execute("UPDATE deposit_accounts SET active = 0 WHERE id = %s", (account_id,))
+            cur.execute("UPDATE deposit_accounts SET active = 1, deposit_count = 0 WHERE id = %s", (next_id,))
         else:
             # Only one account - just reset its counter
-            cur.execute("UPDATE deposit_accounts SET deposit_count = 0 WHERE id = ?", (account_id,))
+            cur.execute("UPDATE deposit_accounts SET deposit_count = 0 WHERE id = %s", (account_id,))
 
     conn.commit()
+    release_connection(conn)
 
 
 # =====================================================================
@@ -895,90 +900,96 @@ def is_game_stuck(game_id: int) -> tuple:
     return False, ""
 
 
-def get_or_create_active_game(room_fee: float) -> sqlite3.Row:
+def get_or_create_active_game(room_fee: float):
     """Get the current waiting/running game for this room fee,
     or create a fresh 'waiting' game if none exists."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "SELECT * FROM games WHERE room_fee = ? AND state IN ('waiting','running') ORDER BY id DESC LIMIT 1",
+        "SELECT * FROM games WHERE room_fee = %s AND state IN ('waiting','running') ORDER BY id DESC LIMIT 1",
         (room_fee,)
     )
     game = cur.fetchone()
 
     if game is None:
         cur.execute(
-            "INSERT INTO games (room_fee, state, pool, created_at) VALUES (?, 'waiting', 0, ?)",
+            "INSERT INTO games (room_fee, state, pool, created_at) VALUES (%s, 'waiting', 0, %s)",
             (room_fee, datetime.utcnow().isoformat())
         )
         conn.commit()
-        cur.execute("SELECT * FROM games WHERE id = ?", (cur.lastrowid,))
+        cur.execute("SELECT * FROM games WHERE id = %s", (cur.lastrowid,))
         game = cur.fetchone()
+    release_connection(conn)
     return game
 
 
-def get_game(game_id: int) -> sqlite3.Row:
+def get_game(game_id: int):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM games WHERE id = ?", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT * FROM games WHERE id = %s", (game_id,))
     row = cur.fetchone()
+    release_connection(conn)
     return row
 
 
 def set_game_state(game_id: int, state: str):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     if state == "running":
         cur.execute(
-            "UPDATE games SET state = ?, started_at = ? WHERE id = ?",
+            "UPDATE games SET state = %s, started_at = %s WHERE id = %s",
             (state, datetime.utcnow().isoformat(), game_id)
         )
     else:
-        cur.execute("UPDATE games SET state = ? WHERE id = ?", (state, game_id))
+        cur.execute("UPDATE games SET state = %s WHERE id = %s", (state, game_id))
     conn.commit()
+    release_connection(conn)
 
 
 def finish_game(game_id: int, winner_ids: list, house_cut: float, per_winner_amount: float, winner_cards: dict = None):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE games SET state = 'finished', winner_ids = ?, winner_cards = ?, house_cut = ?, "
-        "per_winner_amount = ?, finished_at = ? WHERE id = ?",
+        "UPDATE games SET state = 'finished', winner_ids = %s, winner_cards = %s, house_cut = %s, "
+        "per_winner_amount = %s, finished_at = %s WHERE id = %s",
         (json.dumps(winner_ids), json.dumps(winner_cards or {}), house_cut, per_winner_amount, datetime.utcnow().isoformat(), game_id)
     )
     conn.commit()
+    release_connection(conn)
 
 
 def set_game_countdown_start(game_id: int):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE games SET countdown_started_at = ? WHERE id = ?",
+        "UPDATE games SET countdown_started_at = %s WHERE id = %s",
         (datetime.utcnow().isoformat(), game_id)
     )
     conn.commit()
+    release_connection(conn)
 
 
 def clear_game_countdown_start(game_id: int):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE games SET countdown_started_at = NULL WHERE id = ?",
+        "UPDATE games SET countdown_started_at = NULL WHERE id = %s",
         (game_id,)
     )
     conn.commit()
+    release_connection(conn)
 
 
 def get_pool(game_id: int) -> float:
     game = get_game(game_id)
-    return game["pool"] if game else 0.0
+    return float(game["pool"]) if game else 0.0
 
 
 def get_prize_pool(game_id: int) -> float:
     game = get_game(game_id)
     if not game:
         return 0.0
-    pool = game["pool"]
+    pool = float(game["pool"])
     house_cut = round(pool * config.HOUSE_COMMISSION_PERCENT / 100, 2)
     return round(pool - house_cut, 2)
 
@@ -991,59 +1002,64 @@ def upsert_game_player_message(game_id: int, user_id: int, chat_id: int, message
     """Store/update where this player's live game message lives, so the
     number-calling loop can edit it directly."""
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM game_players WHERE game_id = ? AND user_id = ?", (game_id, user_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT id FROM game_players WHERE game_id = %s AND user_id = %s", (game_id, user_id))
     row = cur.fetchone()
 
     if row:
         cur.execute(
-            "UPDATE game_players SET chat_id = ?, message_id = ? WHERE game_id = ? AND user_id = ?",
+            "UPDATE game_players SET chat_id = %s, message_id = %s WHERE game_id = %s AND user_id = %s",
             (chat_id, message_id, game_id, user_id)
         )
     else:
         cur.execute(
             "INSERT INTO game_players (game_id, user_id, cards_count, auto_win, chat_id, message_id, created_at) "
-            "VALUES (?, ?, 0, 0, ?, ?, ?)",
+            "VALUES (%s, %s, 0, 0, %s, %s, %s)",
             (game_id, user_id, chat_id, message_id, datetime.utcnow().isoformat())
         )
     conn.commit()
+    release_connection(conn)
 
 
-def get_game_player(game_id: int, user_id: int) -> sqlite3.Row:
+def get_game_player(game_id: int, user_id: int):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM game_players WHERE game_id = ? AND user_id = ?", (game_id, user_id))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT * FROM game_players WHERE game_id = %s AND user_id = %s", (game_id, user_id))
     row = cur.fetchone()
+    release_connection(conn)
     return row
 
 
 def get_game_players(game_id: int) -> list:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM game_players WHERE game_id = ? ORDER BY id ASC", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT * FROM game_players WHERE game_id = %s ORDER BY id ASC", (game_id,))
     rows = cur.fetchall()
+    release_connection(conn)
     return rows
 
 
-def get_user_chat_id(user_id: int) -> int | None:
+def get_user_chat_id(user_id: int):
     user = get_user(user_id)
     if user and user.get("chat_id"):
         return user["chat_id"]
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT chat_id FROM game_players WHERE user_id = ? AND chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", (user_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT chat_id FROM game_players WHERE user_id = %s AND chat_id IS NOT NULL ORDER BY id DESC LIMIT 1", (user_id,))
     row = cur.fetchone()
+    release_connection(conn)
     return row["chat_id"] if row else None
 
 
 def set_auto_win(game_id: int, user_id: int, value: bool):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE game_players SET auto_win = ? WHERE game_id = ? AND user_id = ?",
+        "UPDATE game_players SET auto_win = %s WHERE game_id = %s AND user_id = %s",
         (1 if value else 0, game_id, user_id)
     )
     conn.commit()
+    release_connection(conn)
 
 
 # =====================================================================
@@ -1052,36 +1068,38 @@ def set_auto_win(game_id: int, user_id: int, value: bool):
 
 def get_taken_cards(game_id: int) -> set:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT card_index FROM game_cards WHERE game_id = ?", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT card_index FROM game_cards WHERE game_id = %s", (game_id,))
     rows = cur.fetchall()
+    release_connection(conn)
     return {r["card_index"] for r in rows}
 
 
 def get_player_cards(game_id: int, user_id: int) -> list:
     """Returns list of card_index values owned by this user in this game, ordered."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "SELECT card_index FROM game_cards WHERE game_id = ? AND owner_id = ? ORDER BY card_index ASC",
+        "SELECT card_index FROM game_cards WHERE game_id = %s AND owner_id = %s ORDER BY card_index ASC",
         (game_id, user_id)
     )
     rows = cur.fetchall()
+    release_connection(conn)
     return [r["card_index"] for r in rows]
 
 
-def get_user_active_game(user_id: int) -> sqlite3.Row:
+def get_user_active_game(user_id: int):
     """Return the most recent game the user owns cards in that is still
     joinable (waiting or running), or None if they have no live game to
     resume. Used to surface an 'Open game' / rejoin option when a player
     re-opens the Mini App after closing it mid-round."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
         """
         SELECT g.* FROM games g
         JOIN game_cards c ON c.game_id = g.id
-        WHERE c.owner_id = ?
+        WHERE c.owner_id = %s
           AND g.state IN ('waiting','running')
         GROUP BY g.id
         ORDER BY g.id DESC
@@ -1090,23 +1108,26 @@ def get_user_active_game(user_id: int) -> sqlite3.Row:
         (user_id,)
     )
     row = cur.fetchone()
+    release_connection(conn)
     return row
 
 
 def count_cards_sold(game_id: int) -> int:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) as c FROM game_cards WHERE game_id = ?", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT COUNT(*) as c FROM game_cards WHERE game_id = %s", (game_id,))
     row = cur.fetchone()
+    release_connection(conn)
     return row["c"]
 
 
 def get_all_game_cards(game_id: int) -> list:
     """Returns all cards in a game with owner info - used for refunds / payouts."""
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM game_cards WHERE game_id = ?", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT * FROM game_cards WHERE game_id = %s", (game_id,))
     rows = cur.fetchall()
+    release_connection(conn)
     return rows
 
 
@@ -1115,10 +1136,11 @@ def get_games_player_counts(game_ids: list) -> dict:
     if not game_ids:
         return {}
     conn = get_connection()
-    cur = conn.cursor()
-    placeholders = ",".join("?" for _ in game_ids)
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    placeholders = ",".join(["%s"] * len(game_ids))
     cur.execute(f"SELECT game_id, COUNT(*) as c FROM game_players WHERE game_id IN ({placeholders}) GROUP BY game_id", game_ids)
     rows = cur.fetchall()
+    release_connection(conn)
     return {r["game_id"]: r["c"] for r in rows}
 
 
@@ -1127,34 +1149,51 @@ def get_games_cards_sold(game_ids: list) -> dict:
     if not game_ids:
         return {}
     conn = get_connection()
-    cur = conn.cursor()
-    placeholders = ",".join("?" for _ in game_ids)
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    placeholders = ",".join(["%s"] * len(game_ids))
     cur.execute(f"SELECT game_id, COUNT(*) as c FROM game_cards WHERE game_id IN ({placeholders}) GROUP BY game_id", game_ids)
     rows = cur.fetchall()
+    release_connection(conn)
     return {r["game_id"]: r["c"] for r in rows}
 
 
 def update_marked_numbers(game_id: int, card_index: int, marked_list: list):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE game_cards SET marked_numbers = ? WHERE game_id = ? AND card_index = ?",
+        "UPDATE game_cards SET marked_numbers = %s WHERE game_id = %s AND card_index = %s",
         (json.dumps(marked_list), game_id, card_index)
     )
     conn.commit()
+    release_connection(conn)
 
 
 def get_marked_numbers(game_id: int, card_index: int) -> list:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "SELECT marked_numbers FROM game_cards WHERE game_id = ? AND card_index = ?",
+        "SELECT marked_numbers FROM game_cards WHERE game_id = %s AND card_index = %s",
         (game_id, card_index)
     )
     row = cur.fetchone()
+    release_connection(conn)
     if row is None:
         return []
     return json.loads(row["marked_numbers"])
+
+
+def get_all_marked_numbers(game_id: int) -> dict:
+    """Return {card_index: marked_numbers_list} for all cards in a game.
+    Single query instead of N separate queries."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute(
+        "SELECT card_index, marked_numbers FROM game_cards WHERE game_id = %s",
+        (game_id,)
+    )
+    rows = cur.fetchall()
+    release_connection(conn)
+    return {row["card_index"]: json.loads(row["marked_numbers"]) for row in rows}
 
 
 def purchase_cards(game_id: int, user_id: int, card_indices: list, fee_per_card: float):
@@ -1175,55 +1214,59 @@ def purchase_cards(game_id: int, user_id: int, card_indices: list, fee_per_card:
     now = datetime.utcnow().isoformat()
 
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     try:
-        cur.execute("BEGIN IMMEDIATE")
+        cur.execute("BEGIN")
 
         # --- Check max cards per player ---
-        cur.execute("SELECT cards_count FROM game_players WHERE game_id = ? AND user_id = ?", (game_id, user_id))
+        cur.execute("SELECT cards_count FROM game_players WHERE game_id = %s AND user_id = %s", (game_id, user_id))
         gp = cur.fetchone()
         existing_count = gp["cards_count"] if gp else 0
 
         if existing_count + len(card_indices) > config.MAX_CARDS_PER_PLAYER:
             conn.rollback()
+            release_connection(conn)
             return False, "max_cards_exceeded"
 
         # --- Conditional balance debit (atomic, bonus first, prevents negative balance) ---
         success, reason = spend_funds(user_id, total_cost, conn=conn, cur=cur)
         if not success:
             conn.rollback()
+            release_connection(conn)
             return False, reason
 
         # --- Insert cards (UNIQUE constraint prevents double-selling) ---
         for card_index in card_indices:
             cur.execute(
                 "INSERT INTO game_cards (game_id, card_index, owner_id, marked_numbers, created_at) "
-                "VALUES (?, ?, ?, '[]', ?)",
+                "VALUES (%s, %s, %s, '[]', %s)",
                 (game_id, card_index, user_id, now)
             )
 
         # --- Update pool ---
-        cur.execute("UPDATE games SET pool = pool + ? WHERE id = ?", (total_cost, game_id))
+        cur.execute("UPDATE games SET pool = pool + %s WHERE id = %s", (total_cost, game_id))
 
         # --- Upsert game_players ---
         if gp is None:
             cur.execute(
                 "INSERT INTO game_players (game_id, user_id, cards_count, auto_win, created_at) "
-                "VALUES (?, ?, ?, 0, ?)",
+                "VALUES (%s, %s, %s, 0, %s)",
                 (game_id, user_id, len(card_indices), now)
             )
         else:
             cur.execute(
-                "UPDATE game_players SET cards_count = cards_count + ? WHERE game_id = ? AND user_id = ?",
+                "UPDATE game_players SET cards_count = cards_count + %s WHERE game_id = %s AND user_id = %s",
                 (len(card_indices), game_id, user_id)
             )
 
         conn.commit()
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         conn.rollback()
+        release_connection(conn)
         return False, "card_taken"
     except Exception:
         conn.rollback()
+        release_connection(conn)
         raise
     record_transaction(user_id, "bingo_bet", -total_cost, status="completed")
     return True, "ok"
@@ -1254,28 +1297,31 @@ def refund_game(game_id: int):
 
 def add_called_number(game_id: int, call_order: int, number: int):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "INSERT INTO game_numbers (game_id, call_order, number, called_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO game_numbers (game_id, call_order, number, called_at) VALUES (%s, %s, %s, %s)",
         (game_id, call_order, number, datetime.utcnow().isoformat())
     )
     conn.commit()
+    release_connection(conn)
 
 
 def get_called_numbers(game_id: int) -> list:
     """Returns the called numbers in call order."""
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT number FROM game_numbers WHERE game_id = ? ORDER BY call_order ASC", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT number FROM game_numbers WHERE game_id = %s ORDER BY call_order ASC", (game_id,))
     rows = cur.fetchall()
+    release_connection(conn)
     return [r["number"] for r in rows]
 
 
 def get_call_count(game_id: int) -> int:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) as c FROM game_numbers WHERE game_id = ?", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("SELECT COUNT(*) as c FROM game_numbers WHERE game_id = %s", (game_id,))
     row = cur.fetchone()
+    release_connection(conn)
     return row["c"]
 
 
@@ -1287,28 +1333,31 @@ def record_admin_action(admin_id: int, action: str, target_id=None, details=None
     if details is not None and not isinstance(details, str):
         details = json.dumps(details)
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "INSERT INTO admin_audit_log (admin_id, action, target_id, details, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO admin_audit_log (admin_id, action, target_id, details, created_at) VALUES (%s, %s, %s, %s, %s)",
         (admin_id, action, target_id, details, datetime.utcnow().isoformat())
     )
     conn.commit()
+    release_connection(conn)
 
 
 def get_total_games_played() -> int:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT COUNT(*) as c FROM games WHERE state = 'finished'")
     row = cur.fetchone()
+    release_connection(conn)
     return row["c"]
 
 
 def get_total_unique_players() -> int:
     """Number of distinct users who have ever bought a bingo card."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT COUNT(DISTINCT owner_id) as c FROM game_cards")
     row = cur.fetchone()
+    release_connection(conn)
     return row["c"]
 
 
@@ -1322,67 +1371,72 @@ def init_house_wallet():
     """Ensure house_wallet table and its single row exist.
     Called inside init_db() automatically."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS house_wallet (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            balance REAL NOT NULL DEFAULT 0,
-            total_earned REAL NOT NULL DEFAULT 0,
+            balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+            total_earned NUMERIC(12,2) NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL
         )
     """)
     cur.execute("""
-        INSERT OR IGNORE INTO house_wallet (id, balance, total_earned, updated_at)
-        VALUES (1, 0, 0, ?)
+        INSERT INTO house_wallet (id, balance, total_earned, updated_at)
+        VALUES (1, 0, 0, %s)
+        ON CONFLICT (id) DO NOTHING
     """, (datetime.utcnow().isoformat(),))
 
     cur.execute("""
-        INSERT OR IGNORE INTO jackpot (id, current_amount, room_fee, triggered, updated_at)
-        VALUES (1, 0, ?, 0, ?)
+        INSERT INTO jackpot (id, current_amount, room_fee, triggered, updated_at)
+        VALUES (1, 0, %s, 0, %s)
+        ON CONFLICT (id) DO NOTHING
     """, (config.JACKPOT_ROOM_FEE, datetime.utcnow().isoformat()))
     conn.commit()
 
 
 def get_house_balance() -> float:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT balance FROM house_wallet WHERE id = 1")
     row = cur.fetchone()
-    return row["balance"] if row else 0.0
+    release_connection(conn)
+    return float(row["balance"]) if row else 0.0
 
 
 def get_house_total_earned() -> float:
     """Cumulative all-time commission - never decreases."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT total_earned FROM house_wallet WHERE id = 1")
     row = cur.fetchone()
-    return row["total_earned"] if row else 0.0
+    release_connection(conn)
+    return float(row["total_earned"]) if row else 0.0
 
 
 def add_house_commission(amount: float) -> float:
     """Credit the house wallet. Returns new balance."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("""
         UPDATE house_wallet
-        SET balance = balance + ?,
-            total_earned = total_earned + ?,
-            updated_at = ?
+        SET balance = balance + %s,
+            total_earned = total_earned + %s,
+            updated_at = %s
         WHERE id = 1
     """, (amount, amount, datetime.utcnow().isoformat()))
 
     jackpot_contrib = round(amount * config.JACKPOT_CONTRIBUTION_PERCENT / 100, 2)
     if jackpot_contrib > 0:
         cur.execute(
-            "UPDATE jackpot SET current_amount = current_amount + ?, updated_at = ? WHERE id = 1",
+            "UPDATE jackpot SET current_amount = current_amount + %s, updated_at = %s WHERE id = 1",
             (jackpot_contrib, datetime.utcnow().isoformat()),
         )
 
     conn.commit()
     cur.execute("SELECT balance FROM house_wallet WHERE id = 1")
     new_balance = cur.fetchone()["balance"]
-    return new_balance
+    release_connection(conn)
+    return float(new_balance)
 
 
 def credit_house(amount: float) -> float:
@@ -1396,9 +1450,10 @@ def credit_house(amount: float) -> float:
 
 def get_jackpot() -> dict:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute("SELECT * FROM jackpot WHERE id = 1")
     row = cur.fetchone()
+    release_connection(conn)
     if row is None:
         return {
             "id": 1,
@@ -1412,76 +1467,83 @@ def get_jackpot() -> dict:
 
 def reset_jackpot():
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "UPDATE jackpot SET current_amount = 0, triggered = 0, updated_at = ? WHERE id = 1",
+        "UPDATE jackpot SET current_amount = 0, triggered = 0, updated_at = %s WHERE id = 1",
         (datetime.utcnow().isoformat(),),
     )
     conn.commit()
+    release_connection(conn)
 
 
 def trigger_jackpot(game_id: int) -> float:
     """Add JACKPOT_TRIGGER_AMOUNT to the game's pool and reset jackpot.
     Returns the bonus amount added."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     bonus = float(config.JACKPOT_TRIGGER_AMOUNT)
-    cur.execute("UPDATE games SET pool = pool + ? WHERE id = ?", (bonus, game_id))
+    cur.execute("UPDATE games SET pool = pool + %s WHERE id = %s", (bonus, game_id))
     cur.execute(
-        "UPDATE jackpot SET current_amount = 0, triggered = 1, updated_at = ? WHERE id = 1",
+        "UPDATE jackpot SET current_amount = 0, triggered = 1, updated_at = %s WHERE id = 1",
         (datetime.utcnow().isoformat(),),
     )
     conn.commit()
+    release_connection(conn)
     return bonus
 
 
 def withdraw_house_funds(amount: float):
     """Deduct from house wallet. Returns (success, reason, new_balance)."""
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("BEGIN IMMEDIATE")
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("BEGIN")
     cur.execute("SELECT balance FROM house_wallet WHERE id = 1")
     row = cur.fetchone()
-    if row is None or row["balance"] < amount:
+    if row is None or float(row["balance"]) < amount:
         conn.rollback()
+        release_connection(conn)
         return False, "insufficient_house_balance", 0.0
 
     cur.execute("""
-        UPDATE house_wallet SET balance = balance - ?, updated_at = ?
+        UPDATE house_wallet SET balance = balance - %s, updated_at = %s
         WHERE id = 1
     """, (amount, datetime.utcnow().isoformat()))
     conn.commit()
     cur.execute("SELECT balance FROM house_wallet WHERE id = 1")
-    new_bal = cur.fetchone()["balance"]
+    new_bal = float(cur.fetchone()["balance"])
+    release_connection(conn)
     return True, "ok", new_bal
 
 
 def record_manual_bingo_claim(game_id: int, user_id: int, card_indices: list):
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "INSERT INTO manual_bingo_claims (game_id, user_id, card_indices, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO manual_bingo_claims (game_id, user_id, card_indices, created_at) VALUES (%s, %s, %s, %s)",
         (game_id, user_id, json.dumps(card_indices), datetime.utcnow().isoformat())
     )
     conn.commit()
+    release_connection(conn)
 
 
 def get_manual_bingo_claims(game_id: int) -> dict:
     conn = get_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
     cur.execute(
-        "SELECT user_id, card_indices FROM manual_bingo_claims WHERE game_id = ? AND resolved = 0",
+        "SELECT user_id, card_indices FROM manual_bingo_claims WHERE game_id = %s AND resolved = 0",
         (game_id,)
     )
     rows = cur.fetchall()
+    release_connection(conn)
     return {row["user_id"]: json.loads(row["card_indices"]) for row in rows}
 
 
 def clear_manual_bingo_claims(game_id: int):
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM manual_bingo_claims WHERE game_id = ?", (game_id,))
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cur.execute("DELETE FROM manual_bingo_claims WHERE game_id = %s", (game_id,))
     conn.commit()
+    release_connection(conn)
 
 
 def force_finish_stuck_game(game_id: int) -> tuple:
@@ -1498,4 +1560,3 @@ def force_finish_stuck_game(game_id: int) -> tuple:
     except Exception:
         logger.exception("[force-finish] failed for game %s", game_id)
         return False, "db_error"
-

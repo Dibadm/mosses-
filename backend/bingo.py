@@ -13,6 +13,7 @@
 #   - Username masking helper
 # ============================================
 
+import secrets
 import random
 
 COLUMNS = [
@@ -41,9 +42,12 @@ def _generate_one_card(rng: random.Random) -> list:
     return card
 
 
-def generate_card_pool(size: int = 200, seed: int = 20250615) -> list:
+def generate_card_pool(size: int = 200, seed: int = None) -> list:
     """Generate a fixed-seed pool of unique bingo cards.
-    Same seed = same 200 cards every time the bot restarts."""
+    Same seed = same 200 cards every time the bot restarts.
+    Default seed is cryptographically random if not provided."""
+    if seed is None:
+        seed = secrets.randbits(64)
     rng = random.Random(seed)
     pool = []
     seen = set()
@@ -276,10 +280,10 @@ def render_number_grid_html(called_numbers: list) -> str:
 
 def generate_call_sequence(seed: int = None) -> list:
     nums = list(range(1, 76))
-    if seed is not None:
-        random.Random(seed).shuffle(nums)
-    else:
-        random.shuffle(nums)
+    if seed is None:
+        seed = secrets.randbits(64)
+    rng = random.Random(seed)
+    rng.shuffle(nums)
     return nums
 
 

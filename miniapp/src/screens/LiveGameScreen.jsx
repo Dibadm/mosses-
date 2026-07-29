@@ -66,7 +66,7 @@ export default function LiveGameScreen({ gameId, onFinished }) {
 
   useEffect(() => {
     resetBackoff();
-  }, [state, resetBackoff]);
+  }, [gameId, resetBackoff]);
 
   const effectiveState = data || state;
 
@@ -75,7 +75,8 @@ export default function LiveGameScreen({ gameId, onFinished }) {
     const next = !effectiveState.auto_win;
     haptic.light();
     await runAction(() => api.toggleAutoWin(gameId, next));
-    setState(prev => ({ ...prev, auto_win: next }));
+    const fresh = await runAction(() => api.getGameState(gameId));
+    setState(fresh);
   };
 
   const claimBingo = async () => {

@@ -49,13 +49,22 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 
 DB_PATH = os.getenv("DB_PATH", "habesha_bet.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+if DATABASE_URL:
+    use_postgres = True
+elif DB_PATH.startswith(("postgres://", "postgresql://")):
+    use_postgres = True
+    DATABASE_URL = DB_PATH
+else:
+    use_postgres = False
 
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "am")
 
 # ============================================
 # TELEBIRR RECEIPT ONLINE VERIFICATION
 # ============================================
-TELEBIRR_VERIFY_ENABLED = os.getenv("TELEBIRR_VERIFY_ENABLED", "false").lower() == "true"
+TELEBIRR_VERIFY_ENABLED = os.getenv("TELEBIRR_VERIFY_ENABLED", "true").lower() == "true"
 TELEBIRR_VERIFY_TIMEOUT = int(os.getenv("TELEBIRR_VERIFY_TIMEOUT", "10"))
 
 # ============================================

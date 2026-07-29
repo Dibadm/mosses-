@@ -5,6 +5,7 @@
 
 import logging
 import re
+import time
 from typing import Optional
 
 import requests
@@ -13,6 +14,40 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger("habesha_bet")
 
 TELEBIRR_RECEIPT_URL = "https://transactioninfo.ethiotelecom.et/receipt/{receipt_no}"
+
+_CIRCUIT_BREAKER_WINDOW = 60
+_CIRCUIT_BREAKER_THRESHOLD = 5
+_CIRCUIT_BREAKER_COOLDOWN = 120
+
+_failure_timestamps = []
+_circuit_open_until = 0.0
+
+
+def _update_circuit_breaker(success: bool):
+    global _failure_timestamps, _circuit_open_until
+    now = time.time()
+    if success:
+        _failure_timestamps = []
+        _circuit_open_until = 0.0
+        return
+    _failure_timestamps.append(now)
+    cutoff = now - _CIRCUIT_BREAKER_WINDOW
+    _failure_timestamps = [t for t in _failure_timestamps if t >= cutoff]
+    if len(_failure_timestamps) >= _CIRCUIT_BREAKER_THRESHOLD:
+        _circuit_open_until = now + _CIRCUIT_BREAKER_COOLDOWN
+        logger.warning("[telebirr_verify] circuit breaker open until %s", _circuit_open_until)
+
+
+def _is_circuit_open() -> bool:
+    return time.time() < _circuit_open_until
+
+
+_session = requests.Session()
+_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (compatible; HabeshaBet/1.0)",
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "en,am;q=0.9",
+})
 
 
 def verify_receipt_online(receipt_no: str, timeout: int = 10) -> dict:
@@ -31,29 +66,49 @@ def verify_receipt_online(receipt_no: str, timeout: int = 10) -> dict:
     if not receipt_no or not re.match(r'^[A-Za-z0-9]{8,20}$', receipt_no):
         return {"ok": False, "error": "invalid_receipt_number"}
 
+    if _is_circuit_open():
+        return {"ok": False, "error": "receipt_site_circuit_open"}
+
     url = TELEBIRR_RECEIPT_URL.format(receipt_no=receipt_no.upper())
-    try:
-        resp = requests.get(url, timeout=timeout)
-        if resp.status_code != 200:
-            return {"ok": False, "error": f"receipt_not_found_http_{resp.status_code}"}
-    except requests.Timeout:
-        logger.warning("[telebirr_verify] timeout fetching receipt %s", receipt_no)
-        return {"ok": False, "error": "receipt_site_timeout"}
-    except requests.ConnectionError:
-        logger.warning("[telebirr_verify] connection error fetching receipt %s", receipt_no)
-        return {"ok": False, "error": "receipt_site_unreachable"}
-    except Exception as e:
-        logger.warning("[telebirr_verify] unexpected error fetching receipt %s: %s", receipt_no, e)
-        return {"ok": False, "error": "receipt_fetch_error"}
 
-    html = resp.text
-    result = parse_receipt_html(html)
+    max_retries = 2
+    backoff = 1.0
+    last_error = None
 
-    if not result.get("ok"):
-        return result
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = _session.get(url, timeout=(timeout, timeout))
+            if resp.status_code == 200:
+                _update_circuit_breaker(True)
+                html = resp.text
+                result = parse_receipt_html(html)
 
-    result["reference"] = receipt_no.upper()
-    return result
+                if not result.get("ok"):
+                    _update_circuit_breaker(False)
+                    return result
+
+                result["reference"] = receipt_no.upper()
+                return result
+
+            if resp.status_code == 404:
+                _update_circuit_breaker(False)
+                return {"ok": False, "error": "receipt_not_found_http_404"}
+
+            last_error = f"receipt_not_found_http_{resp.status_code}"
+        except requests.Timeout:
+            last_error = "receipt_site_timeout"
+        except requests.ConnectionError:
+            last_error = "receipt_site_unreachable"
+        except Exception as e:
+            logger.warning("[telebirr_verify] unexpected error fetching receipt %s: %s", receipt_no, e)
+            last_error = "receipt_fetch_error"
+
+        if attempt < max_retries:
+            time.sleep(backoff)
+            backoff *= 2
+
+    _update_circuit_breaker(False)
+    return {"ok": False, "error": last_error}
 
 
 def parse_receipt_html(html: str) -> dict:
