@@ -404,9 +404,11 @@ def handle_get_game_state(user_id: int, game_id: int) -> dict:
     gp = db.get_game_player(game_id, user_id)
     auto_win = bool(gp["auto_win"]) if gp else False
 
+    marked_map = db.get_all_marked_numbers(game_id) if my_card_indices else {}
+
     my_cards = []
     for idx in my_card_indices:
-        marked = db.get_marked_numbers(game_id, idx)
+        marked = marked_map.get(idx, [])
         # Auto mode: called numbers are pre-highlighted so the user sees
         # matches automatically. Manual mode: called_numbers is passed as
         # [] so the frontend does NOT auto-mark cells; the user must tap
@@ -674,10 +676,10 @@ def handle_withdraw(user_id: int, amount: float) -> dict:
     if amount < config.MIN_WITHDRAWAL:
         return {"ok": False, "error": "below_minimum", "message": f"Minimum withdrawal is {config.MIN_WITHDRAWAL} ETB."}
 
-    if amount > db.get_balance(user_id):
-        return {"ok": False, "error": "insufficient_balance", "message": "Insufficient balance."}
+    success, new_balance = db.deduct_balance(user_id, amount)
+    if not success:
+        return {"ok": False, "error": "insufficient_balance", "message": "Insufficient balance.", "balance": db.get_balance(user_id)}
 
-    new_balance = db.adjust_balance(user_id, -amount)
     withdrawal_id = db.create_withdrawal(user_id, amount, db_user["phone"])
     db.record_transaction(user_id, "withdraw", -amount, reference=f"withdraw_{withdrawal_id}", status="pending")
 
