@@ -58,6 +58,10 @@ def get_connection():
                     connect_timeout=10,
                 )
     conn = _db_pool.getconn()
+    try:
+        conn.rollback()
+    except Exception:
+        pass
     conn.autocommit = False
     return conn
 
@@ -65,6 +69,10 @@ def get_connection():
 def release_connection(conn):
     global _db_pool
     if _db_pool is not None and conn is not None:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         try:
             _db_pool.putconn(conn)
         except Exception:
