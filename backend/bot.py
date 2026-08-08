@@ -583,7 +583,12 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    existing = db.get_user(user.id)
+    try:
+        existing = db.get_user(user.id)
+    except Exception as e:
+        logger.exception("[start] get_user failed for %s", user.id)
+        await update.message.reply_text("⚠️ Service temporarily unavailable. Please try again in a moment.")
+        return ConversationHandler.END
     is_new = existing is None
 
     referred_by = None
@@ -592,12 +597,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if arg.startswith("ref"):
             try:
                 ref_id = int(arg[3:])
-                if ref_id != user.id and db.get_user(ref_id) is not None:
-                    referred_by = ref_id
+                if ref_id != user.id:
+                    try:
+                        ref_user = db.get_user(ref_id)
+                        if ref_user is not None:
+                            referred_by = ref_id
+                    except Exception:
+                        pass
             except ValueError:
                 pass
 
-    db_user = db.get_or_create_user(user.id, display_name(user), referred_by=referred_by)
+    try:
+        db_user = db.get_or_create_user(user.id, display_name(user), referred_by=referred_by)
+    except Exception as e:
+        logger.exception("[start] get_or_create_user failed for %s", user.id)
+        await update.message.reply_text("⚠️ Service temporarily unavailable. Please try again in a moment.")
+        return ConversationHandler.END
+    
     lang = lang_of(db_user)
 
     if is_new or not db_user["phone"]:

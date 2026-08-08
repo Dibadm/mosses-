@@ -54,7 +54,7 @@ def get_connection():
                         "Set it in your environment/config."
                     )
                 _db_pool = pool.ThreadedConnectionPool(
-                    minconn=1, maxconn=20, dsn=db_url,
+                    minconn=5, maxconn=20, dsn=db_url,
                     connect_timeout=10,
                 )
     conn = _db_pool.getconn()
@@ -95,6 +95,8 @@ def init_db():
         except Exception:
             pass
         raise
+    finally:
+        release_connection(conn)
     init_house_wallet()
 
 
@@ -1335,7 +1337,13 @@ def purchase_cards(game_id: int, user_id: int, card_indices: list, fee_per_card:
         conn.rollback()
         release_connection(conn)
         raise
-    record_transaction(user_id, "bingo_bet", -total_cost, status="completed")
+    finally:
+        pass
+
+    try:
+        record_transaction(user_id, "bingo_bet", -total_cost, status="completed")
+    finally:
+        release_connection(conn)
     return True, "ok"
 
 
@@ -1459,6 +1467,7 @@ def init_house_wallet():
         ON CONFLICT (id) DO NOTHING
     """, (config.JACKPOT_ROOM_FEE, datetime.utcnow().isoformat()))
     conn.commit()
+    release_connection(conn)
 
 
 def get_house_balance() -> float:
