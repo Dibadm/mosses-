@@ -89,7 +89,7 @@ export default function LiveGameScreen({ gameId, onFinished }) {
   };
 
   const markNumber = async (cardIndex, number) => {
-    if (!effectiveState?.auto_win) return;
+    if (!effectiveState) return;
 
     setState(prev => {
       if (!prev) return prev;
