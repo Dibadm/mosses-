@@ -68,7 +68,7 @@ export default function LiveGameScreen({ gameId, onFinished }) {
     resetBackoff();
   }, [gameId, resetBackoff]);
 
-  const effectiveState = data || state;
+  const effectiveState = state || data;
 
   const toggleAuto = async () => {
     if (!effectiveState) return;
@@ -106,7 +106,17 @@ export default function LiveGameScreen({ gameId, onFinished }) {
 
     haptic.light();
     try {
-      await runAction(() => api.markNumber(gameId, cardIndex, number));
+      const res = await runAction(() => api.markNumber(gameId, cardIndex, number));
+      if (res.marked) {
+        setState(prev => {
+          if (!prev) return prev;
+          const nextCards = prev.my_cards.map(card => {
+            if (card.card_index !== cardIndex) return card;
+            return { ...card, marked: res.marked };
+          });
+          return { ...prev, my_cards: nextCards };
+        });
+      }
     } catch {
       // fire-and-forget; next poll reconciles from server
     }
