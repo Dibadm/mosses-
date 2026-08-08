@@ -660,6 +660,39 @@ def reference_already_used(reference: str) -> bool:
     return row is not None
 
 
+def deposit_funds(user_id: int, amount: float, reference: str = None, receipt_no: str = None, verification_status: str = None, verification_raw: str = None) -> tuple:
+    """Atomically credit a user's balance and record the deposit transaction.
+    Returns (success: bool, new_balance: float, error: str | None).
+    This is a single-connection operation so it cannot be half-applied."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=extras.RealDictCursor)
+    try:
+        if reference:
+            cur.execute("SELECT 1 FROM transactions WHERE reference = %s", (reference,))
+            if cur.fetchone():
+                cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
+                row = cur.fetchone()
+                return False, float(row["balance"]) if row else 0.0, "already_used"
+
+        cur.execute("UPDATE users SET balance = balance + %s WHERE user_id = %s", (amount, user_id))
+        cur.execute(
+            "INSERT INTO transactions (user_id, type, amount, reference, status, created_at, receipt_no, verification_status, verification_raw) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (user_id, "deposit", amount, reference, "completed", datetime.utcnow().isoformat(), receipt_no, verification_status, verification_raw)
+        )
+        cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
+        new_balance = float(cur.fetchone()["balance"])
+        conn.commit()
+        return True, new_balance, None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        release_connection(conn)
+
+
 def get_user_transactions(user_id: int, limit: int = 10) -> list:
     """Most recent transactions for this user, newest first - used for
     the '/Transactions' menu screen."""

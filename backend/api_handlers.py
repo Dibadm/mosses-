@@ -635,15 +635,16 @@ def handle_submit_deposit_sms(user_id: int, sms_text: str, expected_amount: floa
                 "message": f"SMS shows {parsed['amount']} ETB but {expected_amount} ETB was expected.",
             }
 
-    new_balance = db.adjust_balance(user_id, parsed["amount"])
-    db.record_transaction(
-        user_id, "deposit", parsed["amount"],
+    success, new_balance, error = db.deposit_funds(
+        user_id, parsed["amount"],
         reference=parsed["reference"],
-        status="completed",
         receipt_no=receipt_no,
         verification_status=verification_status,
         verification_raw=verification_raw,
     )
+    if not success:
+        return {"ok": False, "error": error or "deposit_failed", "message": "This transaction has already been credited."}
+
     db.record_deposit_for_account(account["id"])
 
     _maybe_award_referral_bonus(user_id)

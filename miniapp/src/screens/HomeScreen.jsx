@@ -26,25 +26,16 @@ export default function HomeScreen({ onEnterRoom, onOpenGame }) {
 
   const { loading, error } = usePolling(fetchAll, { interval: 10000, backoffMax: 60000 });
 
-  if (error) {
-    return (
-      <FadeIn>
-        <div className="screen">
-          <TopBar title="ሀበሻ ቤት" />
-          <div className="empty-state">
-            <div className="empty-state-icon">⚠️</div>
-            <div className="empty-state-title">Could not load</div>
-            <div className="empty-state-body">{error.message || 'Network error'}</div>
-          </div>
-        </div>
-      </FadeIn>
-    );
-  }
-
   return (
     <FadeIn>
       <div className="screen">
         <TopBar title="ሀበሻ ቤት" />
+
+        {error && (
+          <div className="text-sm text-red" style={{ padding: '8px 12px', background: '#2a0a0a', borderRadius: 8, marginBottom: 8 }}>
+            ⚠️ {error.message || 'Network error'} — retrying…
+          </div>
+        )}
 
         {user && (
           <div className="row mt-1">
