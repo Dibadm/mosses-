@@ -118,18 +118,18 @@ def _init_tables_impl(cur):
     # ---------------- USERS ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             username TEXT,
             phone TEXT,
             balance NUMERIC(12,2) NOT NULL DEFAULT 0,
             bonus_balance NUMERIC(12,2) NOT NULL DEFAULT 0,
             language TEXT NOT NULL DEFAULT 'am',
-            referred_by INTEGER,
+            referred_by BIGINT,
             referral_bonus_given INTEGER NOT NULL DEFAULT 0,
             last_bonus_claim TEXT,
             last_transfer_time TEXT,
             created_at TEXT NOT NULL,
-            chat_id INTEGER
+            chat_id BIGINT
         )
     """)
 
@@ -157,7 +157,7 @@ def _init_tables_impl(cur):
     # ---- Migration for referred_by ----
     cur.execute("SAVEPOINT sp_referred_by")
     try:
-        cur.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
+        cur.execute("ALTER TABLE users ALTER COLUMN referred_by TYPE BIGINT")
     except errors.DuplicateColumn:
         cur.execute("ROLLBACK TO SAVEPOINT sp_referred_by")
 
@@ -186,7 +186,7 @@ def _init_tables_impl(cur):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
             type TEXT NOT NULL,
             -- types: deposit, withdraw, withdraw_refund, transfer_in, transfer_out,
             --        bingo_bet, bingo_win, bingo_refund,
@@ -212,7 +212,7 @@ def _init_tables_impl(cur):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
             amount NUMERIC(12,2) NOT NULL,
             phone TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
@@ -224,9 +224,9 @@ def _init_tables_impl(cur):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS admin_audit_log (
             id SERIAL PRIMARY KEY,
-            admin_id INTEGER NOT NULL,
+            admin_id BIGINT NOT NULL,
             action TEXT NOT NULL,
-            target_id INTEGER,
+            target_id BIGINT,
             details TEXT,
             created_at TEXT NOT NULL
         )
@@ -278,7 +278,7 @@ def _init_tables_impl(cur):
         CREATE TABLE IF NOT EXISTS manual_bingo_claims (
             id SERIAL PRIMARY KEY,
             game_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
             card_indices TEXT NOT NULL,
             created_at TEXT NOT NULL,
             resolved INTEGER NOT NULL DEFAULT 0
@@ -291,10 +291,10 @@ def _init_tables_impl(cur):
         CREATE TABLE IF NOT EXISTS game_players (
             id SERIAL PRIMARY KEY,
             game_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
             cards_count INTEGER NOT NULL DEFAULT 0,
             auto_win INTEGER NOT NULL DEFAULT 0,
-            chat_id INTEGER,
+            chat_id BIGINT,
             message_id INTEGER,
             created_at TEXT NOT NULL,
             UNIQUE(game_id, user_id)
@@ -307,7 +307,7 @@ def _init_tables_impl(cur):
             id SERIAL PRIMARY KEY,
             game_id INTEGER NOT NULL,
             card_index INTEGER NOT NULL,   -- 0-199, position in the 200-card pool
-            owner_id INTEGER NOT NULL,
+            owner_id BIGINT NOT NULL,
             marked_numbers TEXT NOT NULL DEFAULT '[]',  -- JSON list, manual tap-to-highlight
             created_at TEXT NOT NULL,
             UNIQUE(game_id, card_index)
@@ -345,14 +345,14 @@ def _init_tables_impl(cur):
     for column, col_def in [
         ("phone", "TEXT"),
         ("language", "TEXT NOT NULL DEFAULT 'am'"),
-        ("referred_by", "INTEGER"),
+        ("referred_by", "BIGINT"),
         ("referral_bonus_given", "INTEGER NOT NULL DEFAULT 0"),
         ("last_bonus_claim", "TEXT"),
         ("last_transfer_time", "TEXT"),
         ("bonus_balance", "NUMERIC(12,2) NOT NULL DEFAULT 0"),
         ("daily_streak", "INTEGER NOT NULL DEFAULT 0"),
         ("last_bonus_claim_date", "TEXT"),
-        ("chat_id", "INTEGER"),
+        ("chat_id", "BIGINT"),
     ]:
         cur.execute(f"SAVEPOINT sp_users_{column}")
         try:
@@ -363,9 +363,17 @@ def _init_tables_impl(cur):
     # ---- Migration for chat_id ----
     cur.execute("SAVEPOINT sp_users_chat_id")
     try:
-        cur.execute("ALTER TABLE users ADD COLUMN chat_id INTEGER")
+        cur.execute("ALTER TABLE users ADD COLUMN chat_id BIGINT")
     except errors.DuplicateColumn:
         cur.execute("ROLLBACK TO SAVEPOINT sp_users_chat_id")
+
+    # ---- Migrate existing integer ID columns to BIGINT for Telegram IDs ----
+    for column in ["user_id", "referred_by", "chat_id"]:
+        cur.execute(f"SAVEPOINT sp_type_{column}")
+        try:
+            cur.execute(f"ALTER TABLE users ALTER COLUMN {column} TYPE BIGINT USING {column}::BIGINT")
+        except Exception:
+            cur.execute(f"ROLLBACK TO SAVEPOINT sp_type_{column}")
 
     # ---- Migration for receipt verification columns on transactions ----
     for column, col_def in [
@@ -378,6 +386,50 @@ def _init_tables_impl(cur):
             cur.execute(f"ALTER TABLE transactions ADD COLUMN {column} {col_def}")
         except errors.DuplicateColumn:
             cur.execute(f"ROLLBACK TO SAVEPOINT sp_tx_{column}")
+
+    # ---- Migrate transactions.user_id to BIGINT ----
+    cur.execute("SAVEPOINT sp_tx_user_id_type")
+    try:
+        cur.execute("ALTER TABLE transactions ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT")
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT sp_tx_user_id_type")
+
+    # ---- Migrate withdrawals.user_id to BIGINT ----
+    cur.execute("SAVEPOINT sp_wd_user_id_type")
+    try:
+        cur.execute("ALTER TABLE withdrawals ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT")
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT sp_wd_user_id_type")
+
+    # ---- Migrate admin_audit_log IDs to BIGINT ----
+    for column in ["admin_id", "target_id"]:
+        cur.execute(f"SAVEPOINT sp_audit_{column}_type")
+        try:
+            cur.execute(f"ALTER TABLE admin_audit_log ALTER COLUMN {column} TYPE BIGINT USING {column}::BIGINT")
+        except Exception:
+            cur.execute(f"ROLLBACK TO SAVEPOINT sp_audit_{column}_type")
+
+    # ---- Migrate manual_bingo_claims.user_id to BIGINT ----
+    cur.execute("SAVEPOINT sp_mbc_user_id_type")
+    try:
+        cur.execute("ALTER TABLE manual_bingo_claims ALTER COLUMN user_id TYPE BIGINT USING user_id::BIGINT")
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT sp_mbc_user_id_type")
+
+    # ---- Migrate game_players IDs to BIGINT ----
+    for column in ["user_id", "chat_id"]:
+        cur.execute(f"SAVEPOINT sp_gp_{column}_type")
+        try:
+            cur.execute(f"ALTER TABLE game_players ALTER COLUMN {column} TYPE BIGINT USING {column}::BIGINT")
+        except Exception:
+            cur.execute(f"ROLLBACK TO SAVEPOINT sp_gp_{column}_type")
+
+    # ---- Migrate game_cards.owner_id to BIGINT ----
+    cur.execute("SAVEPOINT sp_gc_owner_type")
+    try:
+        cur.execute("ALTER TABLE game_cards ALTER COLUMN owner_id TYPE BIGINT USING owner_id::BIGINT")
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT sp_gc_owner_type")
 
 
 # =====================================================================
